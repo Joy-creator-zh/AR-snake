@@ -1,0 +1,7 @@
+{
+  "name": "AR Finger Snake",
+  "description": "An augmented reality snake game where your index finger controls the snake. Uses MediaPipe for high-performance hand tracking directly in the browser.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
