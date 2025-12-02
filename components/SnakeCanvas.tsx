@@ -8,14 +8,14 @@ interface SnakeCanvasProps {
   setGameState: (state: GameState) => void;
 }
 
-// Visual and Logic Constants
+// Logic Constants
 const FOOD_RADIUS = 15;
-const SNAKE_RADIUS = 12; // Slightly thicker for better visibility
+const SNAKE_RADIUS = 12;
 const COLLISION_THRESHOLD = 30; // Pixel distance to eat food
-const INITIAL_SNAKE_LENGTH = 10; // Initial number of segments
-const MIN_SEGMENT_DISTANCE = 8; // Pixels finger must move to add a new body segment (Prevents shrinking when still)
-const SEGMENT_GROWTH = 4; // How many segments to add per food
-const SELF_COLLISION_GRACE_ZONES = 12; // Number of segments from head to ignore for self-collision (prevents dying on sharp turns)
+const INITIAL_SNAKE_LENGTH = 20; // Initial nodes
+const MIN_NODE_DISTANCE = 10; // Pixels finger must move to add a new body node (Prevents shrinking)
+const SEGMENT_GROWTH = 5; // How many nodes to add per food
+const SELF_COLLISION_GRACE_NODES = 15; // Ignore the first N nodes near head for collision (allows turning)
 
 const COLORS = ['#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#ec4899'];
 
@@ -24,13 +24,14 @@ export const SnakeCanvas: React.FC<SnakeCanvasProps> = ({ onScoreUpdate, gameSta
   const canvasRef = useRef<HTMLCanvasElement>(null);
   
   // Game Logic Refs
-  const snakeBodyRef = useRef<Point[]>([]);
+  const snakeBodyRef = useRef<Point[]>([]); // Stores history of positions
+  const fingerTipRef = useRef<Point | null>(null); // Current real-time finger position
   const foodRef = useRef<Food | null>(null);
   const scoreRef = useRef<number>(0);
   const requestRef = useRef<number>();
   const handLandmarkerRef = useRef<HandLandmarker | null>(null);
   const lastVideoTimeRef = useRef<number>(-1);
-  const isCameraOnRef = useRef<boolean>(true); // Track camera state
+  const isCameraOnRef = useRef<boolean>(true);
 
   const [loadingStatus, setLoadingStatus] = useState<string>("Initializing Vision Engine...");
   const [cameraActive, setCameraActive] = useState(true);
@@ -45,7 +46,6 @@ export const SnakeCanvas: React.FC<SnakeCanvasProps> = ({ onScoreUpdate, gameSta
     };
   };
 
-  // Helper: Calculate distance between two points
   const getDistance = (p1: Point, p2: Point) => {
     const dx = p1.x - p2.x;
     const dy = p1.y - p2.y;
@@ -91,7 +91,6 @@ export const SnakeCanvas: React.FC<SnakeCanvasProps> = ({ onScoreUpdate, gameSta
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Toggle Camera Function
   const toggleCamera = () => {
     if (videoRef.current && videoRef.current.srcObject) {
       const stream = videoRef.current.srcObject as MediaStream;
@@ -103,15 +102,20 @@ export const SnakeCanvas: React.FC<SnakeCanvasProps> = ({ onScoreUpdate, gameSta
     }
   };
 
-  // Restart Game
   const restartGame = () => {
     snakeBodyRef.current = [];
+    fingerTipRef.current = null;
     scoreRef.current = 0;
     onScoreUpdate(0);
+    
+    // Spawn initial food if canvas is ready
+    if (canvasRef.current) {
+       foodRef.current = spawnFood(canvasRef.current.width, canvasRef.current.height);
+    }
+    
     setGameState(GameState.PLAYING);
   };
 
-  // Start Camera
   const startCamera = async () => {
     if (!videoRef.current) return;
     
@@ -126,24 +130,18 @@ export const SnakeCanvas: React.FC<SnakeCanvasProps> = ({ onScoreUpdate, gameSta
       videoRef.current.srcObject = stream;
       await videoRef.current.play();
       
-      snakeBodyRef.current = [];
-      scoreRef.current = 0;
-      onScoreUpdate(0);
-      
       if (videoRef.current && canvasRef.current) {
         canvasRef.current.width = videoRef.current.videoWidth;
         canvasRef.current.height = videoRef.current.videoHeight;
-        foodRef.current = spawnFood(canvasRef.current.width, canvasRef.current.height);
       }
-
-      setGameState(GameState.PLAYING);
+      
+      restartGame();
     } catch (err) {
       console.error("Error accessing camera:", err);
       alert("Camera access denied or not available.");
     }
   };
 
-  // Main Game Loop
   const animate = useCallback(() => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
@@ -153,47 +151,38 @@ export const SnakeCanvas: React.FC<SnakeCanvasProps> = ({ onScoreUpdate, gameSta
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Continue loop if playing or game over (to render static state)
+    // Loop
     if (gameState === GameState.PLAYING || gameState === GameState.GAME_OVER) {
        requestRef.current = requestAnimationFrame(animate);
     }
 
-    if (!video || !landmarker || !isCameraOnRef.current) {
-      // If camera is off, just clear and return (or maybe draw "Camera Off" text)
-      if (!isCameraOnRef.current) {
+    // Check if camera is paused
+    if (!isCameraOnRef.current) {
          ctx.clearRect(0, 0, canvas.width, canvas.height);
-         ctx.fillStyle = "#1e293b";
+         ctx.fillStyle = "#0f172a";
          ctx.fillRect(0,0, canvas.width, canvas.height);
          ctx.fillStyle = "white";
-         ctx.font = "30px monospace";
+         ctx.font = "20px monospace";
          ctx.textAlign = "center";
          ctx.fillText("Camera Paused", canvas.width/2, canvas.height/2);
          return;
-      }
     }
 
-    // Don't update game logic if Game Over, just re-render last state (or could stop loop)
-    if (gameState === GameState.GAME_OVER) {
-       // We can continue to draw the frozen snake
-       // But we should stop detecting hands to save resources
-       return; 
-    }
+    if (gameState === GameState.GAME_OVER) return; // Stop logic updates on game over, just freeze last frame
 
-    // Clear canvas
+    // Clear
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // 1. Detect Hands
-    let fingerTip: Point | null = null;
-    
-    // Only detect if video has new data
-    if (video && video.currentTime !== lastVideoTimeRef.current) {
+    // 1. Hand Detection
+    if (video && landmarker && video.currentTime !== lastVideoTimeRef.current) {
       lastVideoTimeRef.current = video.currentTime;
       const detections = landmarker.detectForVideo(video, performance.now());
       
       if (detections.landmarks && detections.landmarks.length > 0) {
         const landmarks = detections.landmarks[0];
+        // Index finger tip is landmark 8
         if (landmarks.length >= 9) {
-          fingerTip = {
+          fingerTipRef.current = {
             x: landmarks[8].x * canvas.width,
             y: landmarks[8].y * canvas.height
           };
@@ -201,70 +190,61 @@ export const SnakeCanvas: React.FC<SnakeCanvasProps> = ({ onScoreUpdate, gameSta
       }
     }
 
-    // 2. Update Snake Position
-    if (fingerTip) {
-      // Logic Fix: Only add new point if we moved enough distance.
-      // This prevents the snake from "eating itself" or shrinking when stationary.
-      const head = snakeBodyRef.current[0];
+    const currentHead = fingerTipRef.current;
+
+    // 2. Snake Logic
+    if (currentHead) {
       
-      let shouldAddPoint = false;
-      if (!head) {
-        shouldAddPoint = true;
-      } else {
-        const dist = getDistance(fingerTip, head);
-        if (dist > MIN_SEGMENT_DISTANCE) {
-          shouldAddPoint = true;
-        }
+      // Initialize body if empty
+      if (snakeBodyRef.current.length === 0) {
+        snakeBodyRef.current.push(currentHead);
       }
 
-      if (shouldAddPoint) {
-        snakeBodyRef.current.unshift(fingerTip);
+      // DISTANCE CHECK FOR GROWING/MOVING
+      // We only add a new "history node" if the finger has moved far enough from the last recorded node.
+      // This prevents the snake from shrinking into a single point when stationary.
+      const lastNode = snakeBodyRef.current[0];
+      const dist = getDistance(currentHead, lastNode);
+
+      if (dist > MIN_NODE_DISTANCE) {
+        // Add new head
+        snakeBodyRef.current.unshift(currentHead);
         
-        // Control Length
-        // Base length + bonus for score
+        // Trim tail based on score
         const targetLength = INITIAL_SNAKE_LENGTH + (scoreRef.current * SEGMENT_GROWTH);
-        if (snakeBodyRef.current.length > targetLength) {
+        while (snakeBodyRef.current.length > targetLength) {
           snakeBodyRef.current.pop();
         }
-      } else {
-        // Optional: If we are not moving, we could update the head position slightly 
-        // to exactly match the finger, but replacing the head index can cause jitter.
-        // It's often smoother to just draw a line from the finger to the first body node.
       }
 
-      // Check Self Collision (GAME OVER Logic)
-      // Skip the first few segments (grace zone) to allow turning
-      if (snakeBodyRef.current.length > SELF_COLLISION_GRACE_ZONES) {
-        for (let i = SELF_COLLISION_GRACE_ZONES; i < snakeBodyRef.current.length; i++) {
+      // SELF COLLISION CHECK
+      // Check if currentHead hits any body part.
+      // We skip the first few nodes (SELF_COLLISION_GRACE_NODES) because they are naturally overlapping or close to the head during turns.
+      if (snakeBodyRef.current.length > SELF_COLLISION_GRACE_NODES) {
+        for (let i = SELF_COLLISION_GRACE_NODES; i < snakeBodyRef.current.length; i++) {
           const bodyPart = snakeBodyRef.current[i];
-          if (getDistance(fingerTip, bodyPart) < SNAKE_RADIUS) {
+          if (getDistance(currentHead, bodyPart) < SNAKE_RADIUS) {
             setGameState(GameState.GAME_OVER);
-            // Trigger a vibration if supported
-            if (navigator.vibrate) navigator.vibrate(200);
+            if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
             break; 
           }
         }
       }
 
-    }
-
-    // 3. Collision with Food
-    // We check distance from FingerTip (or current head) to Food
-    const currentHead = fingerTip || snakeBodyRef.current[0];
-    const food = foodRef.current;
-
-    if (currentHead && food) {
-      const distance = getDistance(currentHead, food);
-      if (distance < COLLISION_THRESHOLD) {
-        // Eat Food
-        scoreRef.current += 1;
-        onScoreUpdate(scoreRef.current);
-        foodRef.current = spawnFood(canvas.width, canvas.height);
-        if (navigator.vibrate) navigator.vibrate(50);
+      // FOOD COLLISION
+      if (foodRef.current) {
+         if (getDistance(currentHead, foodRef.current) < COLLISION_THRESHOLD) {
+           scoreRef.current += 1;
+           onScoreUpdate(scoreRef.current);
+           foodRef.current = spawnFood(canvas.width, canvas.height);
+           if (navigator.vibrate) navigator.vibrate(50);
+         }
       }
     }
 
-    // 4. Draw Food
+    // 3. Render
+    
+    // Draw Food
     if (foodRef.current) {
       ctx.beginPath();
       ctx.arc(foodRef.current.x, foodRef.current.y, FOOD_RADIUS, 0, 2 * Math.PI);
@@ -273,73 +253,71 @@ export const SnakeCanvas: React.FC<SnakeCanvasProps> = ({ onScoreUpdate, gameSta
       ctx.strokeStyle = 'white';
       ctx.lineWidth = 2;
       ctx.stroke();
-      
       ctx.shadowBlur = 15;
       ctx.shadowColor = foodRef.current.color;
     }
+    ctx.shadowBlur = 0;
 
-    // 5. Draw Snake
-    ctx.shadowBlur = 0; // Reset shadow for snake
-    
-    // Draw logic: Draw a line from current fingertip to body[0], then body[0] to body[1]...
-    // This makes it feel responsive even if we haven't added a new "history point" yet.
+    // Draw Snake
     if (snakeBodyRef.current.length > 0) {
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       ctx.lineWidth = SNAKE_RADIUS * 2;
       
-      // Gradient
-      const tail = snakeBodyRef.current[snakeBodyRef.current.length - 1];
-      const headPos = fingerTip || snakeBodyRef.current[0];
-      const gradient = ctx.createLinearGradient(headPos.x, headPos.y, tail.x, tail.y);
+      const startPoint = currentHead || snakeBodyRef.current[0];
+      const endPoint = snakeBodyRef.current[snakeBodyRef.current.length - 1];
+      
+      const gradient = ctx.createLinearGradient(startPoint.x, startPoint.y, endPoint.x, endPoint.y);
       gradient.addColorStop(0, '#4ade80');
       gradient.addColorStop(1, '#059669');
       ctx.strokeStyle = gradient;
 
       ctx.beginPath();
-      // Start at current finger position (instant feedback)
-      if (fingerTip) {
-        ctx.moveTo(fingerTip.x, fingerTip.y);
+      
+      // Draw from real-time finger tip to the first recorded history node
+      // This ensures the snake feels responsive (0 lag) even if we haven't pushed a history node yet.
+      if (currentHead) {
+        ctx.moveTo(currentHead.x, currentHead.y);
         ctx.lineTo(snakeBodyRef.current[0].x, snakeBodyRef.current[0].y);
       } else {
         ctx.moveTo(snakeBodyRef.current[0].x, snakeBodyRef.current[0].y);
       }
 
+      // Connect all history nodes
       for (let i = 1; i < snakeBodyRef.current.length; i++) {
          const p = snakeBodyRef.current[i];
-         // Simple smoothing could be done here with quadratic curves
          ctx.lineTo(p.x, p.y);
       }
       ctx.stroke();
 
       // Draw Head
-      ctx.fillStyle = 'white';
-      ctx.beginPath();
-      ctx.arc(headPos.x, headPos.y, SNAKE_RADIUS, 0, 2*Math.PI);
-      ctx.fill();
-      
-      // Eyes
-      ctx.fillStyle = 'black';
-      ctx.beginPath();
-      ctx.arc(headPos.x - 4, headPos.y - 4, 3, 0, Math.PI*2);
-      ctx.arc(headPos.x + 4, headPos.y - 4, 3, 0, Math.PI*2);
-      ctx.fill();
+      if (currentHead) {
+        ctx.fillStyle = 'white';
+        ctx.beginPath();
+        ctx.arc(currentHead.x, currentHead.y, SNAKE_RADIUS, 0, 2*Math.PI);
+        ctx.fill();
+        
+        // Eyes
+        ctx.fillStyle = 'black';
+        ctx.beginPath();
+        ctx.arc(currentHead.x - 4, currentHead.y - 4, 3, 0, Math.PI*2);
+        ctx.arc(currentHead.x + 4, currentHead.y - 4, 3, 0, Math.PI*2);
+        ctx.fill();
+      }
     } else if (gameState === GameState.PLAYING) {
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
-        ctx.font = '20px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText("Show your index finger to start!", canvas.width / 2, canvas.height / 2);
+       // Hint text if no hand detected
+       ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+       ctx.font = '20px sans-serif';
+       ctx.textAlign = 'center';
+       ctx.fillText("Show your index finger to start!", canvas.width / 2, canvas.height / 2);
     }
 
   }, [gameState, onScoreUpdate]);
 
-  // Handle Game Loop Lifecycle
   useEffect(() => {
     if (gameState === GameState.PLAYING) {
       requestRef.current = requestAnimationFrame(animate);
     } 
-    // We don't cancel immediately on Game Over so we can see the frozen frame, 
-    // but the loop handles the Game Over check.
     return () => {
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
     };
@@ -368,7 +346,7 @@ export const SnakeCanvas: React.FC<SnakeCanvasProps> = ({ onScoreUpdate, gameSta
             </h1>
             <p className="text-gray-300 mb-8 max-w-md mx-auto">
               Control the snake with your <span className="text-yellow-400 font-bold">Index Finger</span>.
-              <br/>Avoid hitting your own tail!
+              <br/>Avoid biting your own tail!
             </p>
             <button 
               onClick={startCamera}
@@ -397,25 +375,25 @@ export const SnakeCanvas: React.FC<SnakeCanvasProps> = ({ onScoreUpdate, gameSta
         </div>
       )}
 
-      {/* Video Element (Hidden logic, but keeps size) */}
+      {/* Video Element */}
       <video
         ref={videoRef}
-        className="absolute inset-0 w-full h-full object-cover mirror-x"
+        className={`absolute inset-0 w-full h-full object-cover mirror-x ${!cameraActive ? 'opacity-0' : 'opacity-100'}`}
         muted
         playsInline
       />
 
-      {/* Drawing Canvas */}
+      {/* Canvas */}
       <canvas
         ref={canvasRef}
         className="absolute inset-0 w-full h-full mirror-x"
       />
 
-      {/* Camera Toggle Button (Only visible during gameplay) */}
+      {/* Camera Toggle Button */}
       {(gameState === GameState.PLAYING || gameState === GameState.GAME_OVER) && (
         <button
           onClick={toggleCamera}
-          className={`absolute bottom-4 right-4 p-3 rounded-full transition-colors z-50 ${
+          className={`absolute bottom-4 right-4 p-3 rounded-full transition-colors z-50 shadow-lg ${
             cameraActive ? 'bg-slate-700/80 hover:bg-slate-600 text-white' : 'bg-red-500/80 hover:bg-red-600 text-white'
           }`}
           title={cameraActive ? "Turn Camera Off" : "Turn Camera On"}

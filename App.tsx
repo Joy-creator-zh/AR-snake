@@ -3,9 +3,6 @@ import { SnakeCanvas } from './components/SnakeCanvas';
 import { GameState } from './types';
 import { Trophy, Hand, Camera } from 'lucide-react';
 
-// Simplified Lucide icons components since we can't import external svg libraries easily in this format
-// Using standard SVG for icons to avoid dependency issues in pure generated code.
-
 const TrophyIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-yellow-400"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/></svg>
 );
@@ -62,7 +59,7 @@ export default function App() {
         </div>
         <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700 flex flex-col items-center text-center">
           <div className="w-8 h-8 rounded-full bg-blue-500/20 text-blue-400 flex items-center justify-center mb-2 font-bold">3</div>
-          <p>Collect colored dots to grow. Don't worry about hitting yourself!</p>
+          <p>Collect colored dots to grow. <span className="text-red-400 font-semibold">Avoid hitting your own body!</span></p>
         </div>
       </div>
     </div>
